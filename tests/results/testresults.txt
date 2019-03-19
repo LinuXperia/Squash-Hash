@@ -1,0 +1,3 @@
+Calculation of 4294967296 hashes took 249.2s
+Calculation per hash took 58ns
+
