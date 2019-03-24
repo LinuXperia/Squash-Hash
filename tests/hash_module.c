@@ -148,6 +148,7 @@ int main(int argc, char *argv[]){
 		char* a = argv[2];
 		uint64_t iterations = ((uint64_t)atoi(a))>>8;
 		uint8_t hashes[256][32] = {0};
+		FILE* fp = fopen("hashes.txt", "w");
 		for(uint16_t i=0;i<256;i++){
 			for(uint8_t j=0;j<32;j++) hashes[i][j] = i;
 		}

@@ -81,7 +81,7 @@ def padr(data, lenght):
 	data = str(data)
 	return (data + (' ' * (-(len(data))&lenght))[:-1])
 
-def iterate(seed, iterations):
+def iterate(iterations):
 	if sys.platform == "linux" or sys.platform == "linux2":
 		os.system("./hash.o 1 {}".format(iterations))
 	else:
@@ -89,7 +89,7 @@ def iterate(seed, iterations):
 	os.system("sort hashes.txt -o hashes.txt")
 	return
 
-def test_time(seed):
+def test_time():
 	ctime = time_module.time()
 	if sys.platform == "linux" or sys.platform == "linux2":
 		os.system("./hash.o 0")
@@ -99,14 +99,13 @@ def test_time(seed):
 
 
 def sinit(time, iterations=0):
-	seed = bytes.fromhex(open("hex.txt","r").read()[:-1])
 	os.system("gcc hash_module.c aes.c -O3 -march=native -o hash.o")
 	if time:
-		_time = test_time(seed)
+		_time = test_time()
 		_per_hash = _time / 2**32
 		return([_time,_per_hash])
 	else:
-		iterate(seed, iterations)
+		iterate(iterations)
 		return
 
 def init():
