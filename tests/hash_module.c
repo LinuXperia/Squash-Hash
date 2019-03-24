@@ -70,7 +70,7 @@ uint32_t crc32c_table[256] = {
 	0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d
 };
 
-static inline uint32_t crc32(uint32_t msg) {
+uint32_t crc32(uint32_t msg) {
 	uint32_t crc = 0xFFFFFFFF;
 #if defined(__aarch64__) && defined(__ARM_FEATURE_CRC32)
 	__asm__("crc32w %w0,%w0,%w1\n":"+r"(crc):"r"(msg));
@@ -81,13 +81,40 @@ static inline uint32_t crc32(uint32_t msg) {
 	crc=crc32c_table[crc&0xff]^(crc>>8);
 	crc=crc32c_table[crc&0xff]^(crc>>8);
 #endif
-	return crc;
+	return crc^0xFFFFFFFF;
 }
 
-void hash(uint8_t* data, uint8_t* scratchpad, uint8_t* out){
+uint32_t reverse(uint32_t x)
+{
+#if defined(__aarch64__) && !defined(__x86_64__)
+	  __asm__("rbit %0":"+r"(v));
+#else
+	x = ((x & 0x55555555) << 1) | ((x & 0xAAAAAAAA) >> 1);
+	x = ((x & 0x33333333) << 2) | ((x & 0xCCCCCCCC) >> 2);
+	x = ((x & 0x0F0F0F0F) << 4) | ((x & 0xF0F0F0F0) >> 4);
+	x = ((x & 0x00FF00FF) << 8) | ((x & 0xFF00FF00) >> 8);
+	x = ((x & 0x0000FFFF) << 16) | ((x & 0xFFFF0000) >> 16);
+#endif
+	return x;
+}
+
+// reverse all bytes in the word _v_
+uint64_t swap(uint64_t v) {
+#if defined(__x86_64__)
+	__asm__("bswap %0":"+r"(v));
+#elif defined(__aarch64__)
+	__asm__("rev %0,%0\n":"+r"(v));
+#else
+	v=((v&0xff00ff00ff00ff00ULL)>>8)|((v&0x00ff00ff00ff00ffULL)<<8);
+	v=((v&0xffff0000ffff0000ULL)>>16)|((v&0x0000ffff0000ffffULL)<<16);
+	v=(v>>32)|(v<<32);
+#endif
+	return v;
+}
+
+void hash(uint8_t* data, uint8_t* out){
 	uint8_t   shift[4]   = {0};
 	uint64_t  key[2][2]  = {0};
-	uint64_t  divr[2]    = {0};
 	uint16_t  crc_16[16] = {0};
 	uint32_t* crc_32     = (uint32_t*)crc_16;
 	uint64_t* crc_64     = (uint64_t*)crc_16;
@@ -99,72 +126,32 @@ void hash(uint8_t* data, uint8_t* scratchpad, uint8_t* out){
 	crc_32[1] = crc32(data_32[1]);
 	crc_32[2] = crc32(data_32[2]);
 	crc_32[3] = crc32(data_32[3]);
-	crc_32[4] = ((uint32_t*)&scratchpad[crc_16[0]])[0];
-	crc_32[5] = ((uint32_t*)&scratchpad[crc_16[2]])[0];
-	crc_32[6] = ((uint32_t*)&scratchpad[crc_16[4]])[0];
-	crc_32[7] = ((uint32_t*)&scratchpad[crc_16[6]])[0];
-	divr[0] = (data_64[2] + crc_64[0]) ^ (data_64[2] / crc_64[2]);
-	divr[1] = (data_64[3] + crc_64[1]) ^ (data_64[3] / crc_64[3]);
-	out_64[0] = crc_64[0]^divr[0]; out_64[1] = crc_64[1]^divr[0];
-	out_64[2] = crc_64[2]^divr[1]; out_64[3] = crc_64[3]^divr[1];
+	crc_64[2] = (data_64[2] + crc_64[0]) ^ (data_64[2] / crc_64[0]);
+	crc_64[3] = (data_64[3] + crc_64[1]) ^ (data_64[3] / crc_64[1]);
+	out_64[0] = crc_64[0]; out_64[1] = crc_64[1];
+	out_64[2] = crc_64[2]; out_64[3] = crc_64[3];
 	shift[0] = out_16[15]&0x3f;
 	shift[2] = out_16[ 0]&0x3f;
 	shift[1] = 64-shift[0];
 	shift[3] = 64-shift[2];
-	key[0][0] = (out_64[1]>>shift[0]) | (out_64[0]<<(shift[1]));
-	key[0][1] = (out_64[0]>>shift[0]) | (out_64[1]<<(shift[1]));
-	key[1][0] = (out_64[3]<<shift[2]) | (out_64[2]>>(shift[3]));
-	key[1][1] = (out_64[2]<<shift[2]) | (out_64[3]>>(shift[3]));
+	key[1][0] = (out_64[0]>>shift[0]) | (out_64[0]<<(shift[1]));
+	key[1][1] = (out_64[1]>>shift[0]) | (out_64[1]<<(shift[1]));
+	key[0][0] = (out_64[2]<<shift[2]) | (out_64[2]>>(shift[3]));
+	key[0][1] = (out_64[3]<<shift[2]) | (out_64[3]>>(shift[3]));
 	aes(out     , (uint8_t*)key[0]);
 	aes(&out[16], (uint8_t*)key[1]);
 	return;
 }
 
-uint8_t tallymarker_hextobin(const char* str, uint8_t* bytes, uint32_t blen)
-{
-   uint32_t  pos;
-   uint8_t  idx0;
-   uint8_t  idx1;
-
-   // mapping of ASCII characters to hex values
-   const uint8_t hashmap[] =
-   {
-     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, // 01234567
-     0x08, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // 89:;<=>?
-     0x00, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00, // @ABCDEFG
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // HIJKLMNO
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // PQRSTUVW
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // XYZ[\]^_
-     0x00, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x00, // `abcdefg
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // hijklmno
-   };
-
-   for (pos = 0; ((pos < (blen)) && (pos < 65536)); pos++)
-   {
-      idx0 = (((uint8_t)str[2*pos+0])&0x1F) ^ 0x10;
-      idx1 = (((uint8_t)str[2*pos+1])&0x1F) ^ 0x10;
-      bytes[pos] = (uint8_t)(hashmap[idx0] << 4) | hashmap[idx1];
-   };
-
-   return(0);
-}
-
 int main(int argc, char *argv[]){
 	if (atoi(argv[1])&1){
-		char scratchpad_hex[131072] = {0};
-		FILE* file = fopen("hex.txt", "r");
-		for(uint32_t i=0;i<131072;i++)scratchpad_hex[i] = fgetc(file);
-		fclose(file);
-		char scratchpad[65539] = {[0 ... 65538] = 0};
-		tallymarker_hextobin(scratchpad_hex,(uint8_t*)scratchpad,65536);
-		FILE* fp = fopen("hashes.txt", "w");
 		char* a = argv[2];
 		uint64_t iterations = ((uint64_t)atoi(a))>>8;
 		uint8_t hashes[256][32] = {0};
 		for(uint16_t i=0;i<256;i++){
 			for(uint8_t j=0;j<32;j++) hashes[i][j] = i;
 		}
-		hash(hashes[0], (uint8_t*)scratchpad, hashes[0]);
+		hash(hashes[0], hashes[0]);
 		fprintf(fp, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x"
 				"%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
 				hashes[0][0],  hashes[0][1],  hashes[0][2],  hashes[0][3],  hashes[0][4],  hashes[0][5],  hashes[0][6],  hashes[0][7],
@@ -173,7 +160,7 @@ int main(int argc, char *argv[]){
 				hashes[0][24], hashes[0][25], hashes[0][26], hashes[0][27], hashes[0][28], hashes[0][29], hashes[0][30], hashes[0][31]
 				);
 		for(uint64_t j=0;j<iterations;j++){
-			for(uint64_t i=0; i<256;i++) hash(hashes[i], (uint8_t*)scratchpad, hashes[i]);
+			for(uint64_t i=0; i<256;i++) hash(hashes[i], hashes[i]);
 			for(uint64_t i=0; i<256;i++){
 			fprintf(fp, "\n%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x"
 				"%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
@@ -187,9 +174,8 @@ int main(int argc, char *argv[]){
 		fclose(fp);
 	} else {
 		uint64_t iterations = 4294967296; // 4Gi
-		uint8_t scratchpad[65539] = {[0 ... 65538] = 5}; // 65535 (uint16_t maxvalue) + 4 (32bit/8bit)
 		uint8_t data[32] = {[0 ... 31] = 6};
-		for(uint64_t j=0;j<iterations;j++)hash(data, (uint8_t*)scratchpad, data);
+		for(uint64_t j=0;j<iterations;j++)hash(data, data);
 		return((int)data[0]);
 	}
 	return 1;
